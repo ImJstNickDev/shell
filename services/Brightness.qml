@@ -168,6 +168,8 @@ Singleton {
         readonly property var ddcInfo: root.ddcMonitorMap[modelData.name] ?? null
         readonly property bool isDdc: ddcInfo !== null
         readonly property string busNum: ddcInfo?.busNum ?? ""
+        readonly property string brightnessctlDevice: "intel_backlight"
+        readonly property list<string> brightnessctlArgs: ["brightnessctl", "-d", brightnessctlDevice]
         readonly property bool isAppleDisplay: root.appleDisplayPresent && modelData.model.startsWith("StudioDisplay")
         property real brightness
         property real queuedBrightness: NaN
@@ -214,7 +216,7 @@ Singleton {
             else if (isDdc)
                 Quickshell.execDetached(["ddcutil", "-b", busNum, "setvcp", "10", rounded]);
             else
-                Quickshell.execDetached(["brightnessctl", "s", `${rounded}%`]);
+                Quickshell.execDetached([...brightnessctlArgs, "s", `${rounded}%`]);
 
             if (isDdc)
                 timer.restart();
@@ -225,8 +227,10 @@ Singleton {
                 initProc.command = ["asdbctl", "get"];
             else if (isDdc)
                 initProc.command = ["ddcutil", "-b", busNum, "getvcp", "10", "--brief"];
-            else
-                initProc.command = ["sh", "-c", "echo a b c $(brightnessctl g) $(brightnessctl m)"];
+            else {
+                const cmd = brightnessctlArgs.map(a => `'${a}'`).join(" ");
+                initProc.command = ["sh", "-c", `echo a b c $(${cmd} g) $(${cmd} m)`];
+            }
 
             initProc.running = true;
         }
