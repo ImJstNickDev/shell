@@ -18,9 +18,22 @@ Variants {
 
         screen: modelData
         name: "background"
+
         WlrLayershell.exclusionMode: ExclusionMode.Ignore
-        WlrLayershell.layer: contentItem.Config.background.wallpaperEnabled ? WlrLayer.Background : WlrLayer.Bottom
-        color: contentItem.Config.background.wallpaperEnabled ? "black" : "transparent"
+
+        WlrLayershell.layer:
+            Wallpapers.showPreview
+                || LiveWallpapers.active
+                || !contentItem.Config.background.wallpaperEnabled
+                ? WlrLayer.Bottom
+                : WlrLayer.Background
+
+        /*
+         * Il nero viene disegnato insieme al wallpaper statico,
+         * così partecipa al fade della preview senza coprire
+         * immediatamente il live wallpaper.
+         */
+        color: "transparent"
         surfaceFormat.opaque: false
 
         anchors.top: true
@@ -39,15 +52,89 @@ Variants {
 
             anchors.fill: parent
 
-            Loader {
-                id: wallpaper
-
-                asynchronous: true
+            Item {
+                id: staticWallpaperLayer
 
                 anchors.fill: parent
-                active: Config.background.wallpaperEnabled
 
-                sourceComponent: Wallpaper {}
+                /*
+                 * I cambiamenti di LiveWallpapers.active vengono
+                 * applicati immediatamente.
+                 *
+                 * Soltanto Wallpapers.showPreview avvia il fade.
+                 */
+                function syncImmediately(): void {
+                    previewFade.stop();
+
+                    opacity =
+                        !LiveWallpapers.active
+                        || Wallpapers.showPreview
+                            ? 1
+                            : 0;
+                }
+
+                Component.onCompleted:
+                    syncImmediately()
+
+                Connections {
+                    target: LiveWallpapers
+
+                    function onActiveChanged(): void {
+                        staticWallpaperLayer.syncImmediately();
+                    }
+                }
+
+                Connections {
+                    target: Wallpapers
+
+                    function onShowPreviewChanged(): void {
+                        /*
+                         * Senza un live wallpaper lasciamo gestire
+                         * le normali transizioni al componente
+                         * Wallpaper upstream.
+                         */
+                        if (!LiveWallpapers.active) {
+                            staticWallpaperLayer.syncImmediately();
+                            return;
+                        }
+
+                        previewFade.stop();
+                        previewFade.from =
+                            staticWallpaperLayer.opacity;
+
+                        previewFade.to =
+                            Wallpapers.showPreview
+                                ? 1
+                                : 0;
+
+                        previewFade.restart();
+                    }
+                }
+
+                Anim {
+                    id: previewFade
+
+                    target: staticWallpaperLayer
+                    property: "opacity"
+                    type: Anim.DefaultEffects
+                }
+
+                Rectangle {
+                    anchors.fill: parent
+                    color: "black"
+                }
+
+                Loader {
+                    id: wallpaper
+
+                    asynchronous: true
+                    anchors.fill: parent
+
+                    active:
+                        Config.background.wallpaperEnabled
+
+                    sourceComponent: Wallpaper {}
+                }
             }
 
             Visualiser {

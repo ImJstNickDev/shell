@@ -22,20 +22,67 @@ Searcher {
     property bool previewColourLock
     property bool pendingPreviewClear
 
+    /*
+     * Se LiveWallpapers è occupato nel momento in cui viene
+     * confermato uno statico, conserviamo la richiesta e la
+     * ritentiamo appena il controller torna disponibile.
+     */
+    property bool pendingLiveStop: false
+
+    /*
+     * Serve a distinguere il caricamento iniziale di path.txt
+     * da un cambio di wallpaper avvenuto successivamente.
+     *
+     * Il caricamento iniziale non deve disabilitare un live
+     * wallpaper persistito dalla sessione precedente.
+     */
+    property bool currentLoaded: false
+
     function getCategoryFor(w: FileSystemEntry): string {
         let category = w.parentDir.slice(Paths.wallsdir.length + 1);
+
         if (category.includes("/"))
             category = category.slice(0, category.indexOf("/"));
+
         return category;
     }
 
+    function tryStopLiveWallpaper(): void {
+        if (!pendingLiveStop || LiveWallpapers.busy)
+            return;
+
+        if (LiveWallpapers.clearCurrent())
+            pendingLiveStop = false;
+    }
+
+    function stopLiveWallpaper(): void {
+        pendingLiveStop = true;
+        tryStopLiveWallpaper();
+    }
+
     function setRandom(): void {
-        Quickshell.execDetached(["caelestia", "wallpaper", "-r", ...smartArg]);
+        stopLiveWallpaper();
+
+        Quickshell.execDetached([
+            "caelestia",
+            "wallpaper",
+            "-r",
+            ...smartArg
+        ]);
     }
 
     function setWallpaper(path: string): void {
+        stopLiveWallpaper();
+
         actualCurrent = path;
-        Quickshell.execDetached(["caelestia", "wallpaper", "-f", path, ...smartArg]);
+
+        Quickshell.execDetached([
+            "caelestia",
+            "wallpaper",
+            "-f",
+            path,
+            ...smartArg
+        ]);
     }
 
     function preview(path: string): void {
@@ -48,6 +95,7 @@ Searcher {
 
     function stopPreview(): void {
         showPreview = false;
+
         if (previewColourLock)
             pendingPreviewClear = true;
         else
@@ -59,14 +107,26 @@ Searcher {
             Colours.showPreview = false;
     }
 
+    Connections {
+        target: LiveWallpapers
+
+        function onBusyChanged(): void {
+            if (!LiveWallpapers.busy)
+                root.tryStopLiveWallpaper();
+        }
+    }
+
     list: wallpapers.entries
     key: "relativePath"
     useFuzzy: GlobalConfig.launcher.useFuzzy.wallpapers
+
     extraOpts: useFuzzy ? ({}) : ({
-            forward: false
-        })
+        forward: false
+    })
 
     IpcHandler {
+        target: "wallpaper"
+
         function get(): string {
             return root.actualCurrent;
         }
@@ -76,30 +136,69 @@ Searcher {
         }
 
         function list(): string {
-            return root.list.map(w => w.path).join("\n");
+            return root.list
+                .map(w => w.path)
+                .join("\n");
         }
-
-        target: "wallpaper"
     }
 
     FileView {
         path: root.currentNamePath
         watchChanges: true
         printErrors: false
+
         onFileChanged: reload()
+
         onLoaded: {
+            const wasLoaded = root.currentLoaded;
+            const previousWallpaper = root.actualCurrent;
+
             let wall = text().trim();
+
             if (!wall) {
                 wall = root.fallback;
-                Quickshell.execDetached(["caelestia", "wallpaper", "-f", root.fallback, ...root.smartArg]);
+
+                Quickshell.execDetached([
+                    "caelestia",
+                    "wallpaper",
+                    "-f",
+                    root.fallback,
+                    ...root.smartArg
+                ]);
             }
+
+            /*
+             * Un cambio successivo al caricamento iniziale indica
+             * che un wallpaper statico è stato impostato, anche
+             * eventualmente tramite la CLI esterna.
+             */
+            if (wasLoaded && wall !== previousWallpaper)
+                root.stopLiveWallpaper();
+
+            root.currentLoaded = true;
             root.actualCurrent = wall;
             root.previewColourLock = false;
         }
+
         onLoadFailed: {
+            const wasLoaded = root.currentLoaded;
+            const wallpaperChanged =
+                root.actualCurrent !== root.fallback;
+
+            if (wasLoaded && wallpaperChanged)
+                root.stopLiveWallpaper();
+
+            root.currentLoaded = true;
             root.actualCurrent = root.fallback;
             root.previewColourLock = false;
-            Quickshell.execDetached(["caelestia", "wallpaper", "-f", root.fallback, ...root.smartArg]);
+
+            Quickshell.execDetached([
+                "caelestia",
+                "wallpaper",
+                "-f",
+                root.fallback,
+                ...root.smartArg
+            ]);
         }
     }
 
@@ -114,7 +213,14 @@ Searcher {
     Process {
         id: getPreviewColoursProc
 
-        command: ["caelestia", "wallpaper", "-p", root.previewPath, ...root.smartArg]
+        command: [
+            "caelestia",
+            "wallpaper",
+            "-p",
+            root.previewPath,
+            ...root.smartArg
+        ]
+
         stdout: StdioCollector {
             onStreamFinished: {
                 Colours.load(text, true);
